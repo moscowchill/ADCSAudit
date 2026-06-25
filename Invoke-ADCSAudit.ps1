@@ -85,6 +85,8 @@ $CA_ENROLL      = 0x200
 
 $script:Findings = New-Object System.Collections.Generic.List[object]
 $script:SidNameCache = @{}
+$script:CAEsc6 = @{}        # CA name -> $true if EDITF_ATTRIBUTESUBJECTALTNAME2 enabled
+$script:TemplateCAs = @{}   # template name -> list of CAs that publish it
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -260,6 +262,16 @@ function Invoke-TemplateAudit($ConfigNC,$PublishedMap,$OidGroupLinks) {
         $approvalGated = $mgrApproval -or ($raSig -gt 0)
 
         if ($published -and $lowEnroll.Count -and -not $approvalGated) {
+            # ESC6 amplification: if the issuing CA has EDITF_ATTRIBUTESUBJECTALTNAME2, ANY
+            # client-auth template - even without enrollee-supplies-subject - is effectively
+            # ESC1: the requester injects an arbitrary SAN (e.g. a DA UPN) at request time.
+            if ($clientAuth) {
+                $esc6cas = @(); foreach ($caN in @($script:TemplateCAs[$name])) { if ($script:CAEsc6[$caN]) { $esc6cas += $caN } }
+                if ($esc6cas.Count) {
+                    $vulns += 'ESC6->ESC1'
+                    Add-Finding 'Template' $name 'ESC6->ESC1' 'Critical' ("Client-auth template + low-priv enroll + issuing CA has EDITF SAN (ESC6): request a cert as ANY principal via SAN injection. Verify DC StrongCertificateBindingEnforcement. CA: " + ($esc6cas -join ',')) $lowEnrollNames
+                }
+            }
             if ($ess -and $clientAuth) { $vulns += 'ESC1'; Add-Finding 'Template' $name 'ESC1' 'Critical' 'Enrollee supplies subject + client auth, low-priv enroll' $lowEnrollNames }
             if ($anyPurpose)           { $vulns += 'ESC2'; Add-Finding 'Template' $name 'ESC2' 'Critical' 'Any-purpose EKU, low-priv enroll' $lowEnrollNames }
             if ($enrollAgent -and ($ekus -contains $EKU_CertReqAgent)) { $vulns += 'ESC3'; Add-Finding 'Template' $name 'ESC3' 'High' 'Certificate Request Agent EKU, low-priv enroll' $lowEnrollNames }
@@ -347,7 +359,12 @@ function Invoke-CAAudit($ConfigNC) {
         $caName = [string]$ca.Properties['name'][0]
         $caHost = [string]$ca.Properties['dnshostname'][0]
         $config = "$caHost\$caName"
-        foreach ($tn in $ca.Properties['certificatetemplates']) { $published[[string]$tn] = $true }
+        foreach ($tn in $ca.Properties['certificatetemplates']) {
+            $t = [string]$tn
+            $published[$t] = $true
+            if (-not $script:TemplateCAs.ContainsKey($t)) { $script:TemplateCAs[$t] = @() }
+            $script:TemplateCAs[$t] += $caName
+        }
 
         Write-Host ""
         Write-Host ("  CA: {0}  ({1})" -f $caName,$caHost) -ForegroundColor White
@@ -381,6 +398,7 @@ function Invoke-CAAudit($ConfigNC) {
             $esc7principals = Get-CASecurityLowPriv $config
             if ($esc7principals.Count) { Add-Finding 'CA' $caName 'ESC7' 'Critical' 'Low-priv principal has ManageCA / ManageCertificates' $esc7principals }
         }
+        $script:CAEsc6[$caName] = ($esc6 -eq $true)
 
         $esc8 = 'Skipped'
         if (-not $SkipWebEnrollment) {

@@ -1,5 +1,10 @@
-# Audit output folders / reports - never commit assessment data
+# Audit output folders / reports / archives - never commit assessment data
 ADCSAudit_*/
+ADCSAudit_*
+*.zip
+*.7z
+*.tar
+*.tar.gz
 *_Certipy.txt
 *.csv
 *.json
