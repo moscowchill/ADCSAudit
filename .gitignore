@@ -1,0 +1,6 @@
+# Audit output folders / reports - never commit assessment data
+ADCSAudit_*/
+*_Certipy.txt
+*.csv
+*.json
+!.github/**
